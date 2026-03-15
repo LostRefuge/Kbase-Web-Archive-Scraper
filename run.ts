@@ -53,16 +53,24 @@ const getPageList = async (forcePull: boolean = false) => {
   return pageList;
 };
 
-const scrapeAndWriteImage = async (src: string) => {
+const scrapeAndWriteImage = async (src: string, dateString: string) => {
   const searchString = '/img/';
   const imagePath = src.substring(src.indexOf(searchString) + searchString.length);
   const dir = imagePath.substring(0, imagePath.lastIndexOf('/'));
   console.log(`Found image ${imagePath} in directory ${dir}`);
-  const outputDir = `output/pages/img/${dir}`;
+  const outputDir = `output/pages/img/${dateString}/${dir}`;
+  const datedImagePath = `${dateString}/${imagePath}`;
 
-  if (fs.existsSync(`output/pages/img/${imagePath}`)) {
+  if (fs.existsSync(`output/pages/img/${datedImagePath}`)) {
     // @todo multiple versions of images? if they change them and keep the same name...
-    return imagePath;
+    // Store a list of hashed images, hash pulled images, and compare hashes... if they're different, save the new one
+    // but how do we tell a page to use an older version of an image if there isn't one for that date...
+    // maybe just use the closest past one to the current one, or the closest future one to the current one if there is
+    // no older one? But then what if the previous or future pages don't exist yet, so it saves that image even if it's
+    // not the oldest version of the image?
+    // ugh... just save all images per date? screw it...
+    console.log(`Image ${datedImagePath} already exists, skipping.`);
+    return datedImagePath;
   }
 
   if (!fs.existsSync(outputDir)) {
@@ -75,14 +83,14 @@ const scrapeAndWriteImage = async (src: string) => {
     const data = await response.arrayBuffer();
     if (data) {
       const buffer = Buffer.from(data);
-      fs.writeFileSync(`output/pages/img/${imagePath}`, buffer);
+      fs.writeFileSync(`output/pages/img/${datedImagePath}`, buffer);
     }
   }
 
-  return imagePath;
+  return datedImagePath;
 };
 
-const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
+const scrapeImagesAndStylesheets = async ($: CheerioAPI, dateString: string) => {
   // img tags
   const imageTags = $('img')?.get();
   if (imageTags.length) {
@@ -90,7 +98,7 @@ const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
       try {
         const src = $(el).attr('src');
         if (src) {
-          const imagePath = await scrapeAndWriteImage(src);
+          const imagePath = await scrapeAndWriteImage(src, dateString);
           if (imagePath) {
             $(el).attr('src', `img/${imagePath}`); // replace the src attribute with the new local path
           }
@@ -110,7 +118,6 @@ const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
     const matches: any[] = Array.from(styleText.matchAll(regex));
     let newStyleText = styleText;
     for (const match of matches) {
-      console.log(match);
       if (!match?.[1]?.includes('/img/')) {
         continue;
       }
@@ -121,7 +128,7 @@ const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
         continue;
       }
 
-      const imagePath = await scrapeAndWriteImage(webArchiveUrl);
+      const imagePath = await scrapeAndWriteImage(webArchiveUrl, dateString);
 
       if (!imagePath) {
         continue;
@@ -136,7 +143,10 @@ const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
   }
 
   // stylesheet tags
-  const stylesheetTags = $('link[rel=stylesheet]');
+  const stylesheetTags = $('link[rel=stylesheet]').get();
+  if (stylesheetTags.length !== 0) {
+    console.log(`Stylesheet tags found: ${stylesheetTags.length}`);
+  }
 };
 
 const scrapePage = async (page: PageEntry, html: string) => {
@@ -187,7 +197,11 @@ const scrapePage = async (page: PageEntry, html: string) => {
   } else {
     let itemId: string = '-1';
     if (pageRoute.includes('&')) {
+      if (pageRoute.indexOf('&article_id') !== -1 || pageRoute.indexOf('&cat_id') !== -1) {
+        itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
+      } else {
       itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4, pageRoute.indexOf('&'));
+      }
     } else {
       itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
     }
@@ -201,7 +215,7 @@ const scrapePage = async (page: PageEntry, html: string) => {
 
   console.log(`Writing ${fileName} and associated images and stylesheets...`);
 
-  await scrapeImagesAndStylesheets($);
+  await scrapeImagesAndStylesheets($, date);
 
   // @todo queue and batch writing
   // @todo pull out CSS and images and write those if they don't already exist
@@ -223,7 +237,7 @@ const run = async () => {
   //let stop = false;
   //let i = 0;
   //while (!stop) {
-  for (let i = 0; i < 1; i++) {
+  for (let i = 0; i < 3; i++) {
     const page = pageList[i];
     // if (page.id !== '20060707005402') {
     //   continue;
