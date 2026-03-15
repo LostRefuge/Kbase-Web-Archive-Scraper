@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import * as fs from 'node:fs';
-import type { CheerioAPI } from 'cheerio/dist/commonjs/load';
+import type { CheerioAPI } from 'cheerio';
 
 console.log('Running Knowledge Base scraper...');
 
@@ -53,44 +53,89 @@ const getPageList = async (forcePull: boolean = false) => {
   return pageList;
 };
 
+const scrapeAndWriteImage = async (src: string) => {
+  const searchString = '/img/';
+  const imagePath = src.substring(src.indexOf(searchString) + searchString.length);
+  const dir = imagePath.substring(0, imagePath.lastIndexOf('/'));
+  console.log(`Found image ${imagePath} in directory ${dir}`);
+  const outputDir = `output/pages/img/${dir}`;
+
+  if (fs.existsSync(`output/pages/img/${imagePath}`)) {
+    // @todo multiple versions of images? if they change them and keep the same name...
+    return imagePath;
+  }
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, {recursive: true});
+  }
+
+  const response = await fetch(src);
+
+  if (response?.ok) {
+    const data = await response.arrayBuffer();
+    if (data) {
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(`output/pages/img/${imagePath}`, buffer);
+    }
+  }
+
+  return imagePath;
+};
+
 const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
+  // img tags
   const imageTags = $('img')?.get();
   if (imageTags.length) {
     for (const el of imageTags) {
       try {
         const src = $(el).attr('src');
         if (src) {
-          const searchString = '/img/';
-          const imagePath = src.substring(src.indexOf(searchString) + searchString.length);
-          const dir = imagePath.substring(0, imagePath.lastIndexOf('/'));
-          console.log(`Found image ${imagePath} in directory ${dir}`);
-          const outputDir = `output/pages/img/${dir}`;
-
-          if (fs.existsSync(`output/pages/img/${imagePath}`)) {
-            // @todo multiple versions of images? if they change them and keep the same name...
-            return;
-          }
-
-          if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, {recursive: true});
-          }
-
-          const response = await fetch(src);
-
-          if (response?.ok) {
-            const data = await response.arrayBuffer();
-            if (data) {
-              $(el).attr('src', `img/${imagePath}`); // replace the src attribute with the new local path
-              const buffer = Buffer.from(data);
-              fs.writeFileSync(`output/pages/img/${imagePath}`, buffer);
-            }
+          const imagePath = await scrapeAndWriteImage(src);
+          if (imagePath) {
+            $(el).attr('src', `img/${imagePath}`); // replace the src attribute with the new local path
           }
         }
       } catch (e) {
         console.error(e);
       }
-    };
+    }
   }
+
+  // images in inline css
+  const styles = $('style').get();
+
+  for (const style of styles) {
+    const styleText = $(style).text();
+    const regex = /url\((.*?)\)/g;
+    const matches: any[] = Array.from(styleText.matchAll(regex));
+    let newStyleText = styleText;
+    for (const match of matches) {
+      console.log(match);
+      if (!match?.[1]?.includes('/img/')) {
+        continue;
+      }
+
+      const webArchiveUrl = match?.[1]?.replace(/'/g, '').replace(/"/g, '');
+
+      if (!webArchiveUrl) {
+        continue;
+      }
+
+      const imagePath = await scrapeAndWriteImage(webArchiveUrl);
+
+      if (!imagePath) {
+        continue;
+      }
+
+      newStyleText = newStyleText.replaceAll(webArchiveUrl, `img/${imagePath}`);
+
+      console.log(`Found image ${webArchiveUrl} in style tag, replacing with local path`);
+    }
+
+    $(style).text(newStyleText);
+  }
+
+  // stylesheet tags
   const stylesheetTags = $('link[rel=stylesheet]');
 };
 
