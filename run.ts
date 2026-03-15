@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import * as fs from 'node:fs';
-import type { CheerioAPI } from 'cheerio/src/load';
+import type { CheerioAPI } from 'cheerio/dist/commonjs/load';
 
 console.log('Running Knowledge Base scraper...');
 
@@ -54,7 +54,43 @@ const getPageList = async (forcePull: boolean = false) => {
 };
 
 const scrapeImagesAndStylesheets = async ($: CheerioAPI) => {
-  const imageTags = $('img');
+  const imageTags = $('img')?.get();
+  if (imageTags.length) {
+    for (const el of imageTags) {
+      try {
+        const src = $(el).attr('src');
+        if (src) {
+          const searchString = '/img/';
+          const imagePath = src.substring(src.indexOf(searchString) + searchString.length);
+          const dir = imagePath.substring(0, imagePath.lastIndexOf('/'));
+          console.log(`Found image ${imagePath} in directory ${dir}`);
+          const outputDir = `output/pages/img/${dir}`;
+
+          if (fs.existsSync(`output/pages/img/${imagePath}`)) {
+            // @todo multiple versions of images? if they change them and keep the same name...
+            return;
+          }
+
+          if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, {recursive: true});
+          }
+
+          const response = await fetch(src);
+
+          if (response?.ok) {
+            const data = await response.arrayBuffer();
+            if (data) {
+              $(el).attr('src', `img/${imagePath}`); // replace the src attribute with the new local path
+              const buffer = Buffer.from(data);
+              fs.writeFileSync(`output/pages/img/${imagePath}`, buffer);
+            }
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+  }
   const stylesheetTags = $('link[rel=stylesheet]');
 };
 
@@ -118,12 +154,15 @@ const scrapePage = async (page: PageEntry, html: string) => {
 
   fileName = `${fileName}-${page.id}.html`.replace(/\?/g, '');
 
-  console.log(`Writing ${fileName}`);
+  console.log(`Writing ${fileName} and associated images and stylesheets...`);
+
+  await scrapeImagesAndStylesheets($);
 
   // @todo queue and batch writing
   // @todo pull out CSS and images and write those if they don't already exist
 
   fs.writeFileSync(`output/pages/${fileName}`, $.html());
+
   return date;
 };
 
@@ -139,7 +178,7 @@ const run = async () => {
   //let stop = false;
   //let i = 0;
   //while (!stop) {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 1; i++) {
     const page = pageList[i];
     // if (page.id !== '20060707005402') {
     //   continue;
