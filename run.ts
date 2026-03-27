@@ -1,15 +1,71 @@
+import type { CheerioAPI } from 'cheerio';
 import * as cheerio from 'cheerio';
 import * as fs from 'node:fs';
-import type { CheerioAPI } from 'cheerio';
+import {
+  readImageDuplicatesFile,
+  readImageHashFile,
+  scrapeAndWriteImage,
+  writeImageDuplicatesFile,
+  writeImageHashFile
+} from './images';
 
-console.log('Running Knowledge Base scraper...');
+/*
+ * Notes/Todos
+ *
+ * Titles with / or certain special characters in them cause an error and the pages are
+ * not saved - re-pull all these when fixed
+ *
+ * Skip pages that have already been scraped
+ */
+
+const PAGE_START = 0;
+const PAGE_END = 4000;
+
+const SPECIAL_CHAR_REGEX = /[#%&{}\\<>*?\/$!'":@+`|= ]/g;
 
 interface PageEntry {
-  id: string;
+  timestamp: string;
   url: string;
+  date: Date;
+  dateString: string;
+  pageRoute: string;
+  itemId: string;
 }
 
+const months = [ 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC' ];
+
+const existingPages: string[] = [];
+
+const timestampToDateString = (timestamp: string) => {
+  if (!timestamp) {
+    return {
+      dateString: 'NODATE',
+      date: new Date(0)
+    };
+  }
+
+  const year = parseInt(timestamp.substring(0, 4));
+  const month = parseInt(timestamp.substring(4, 6));
+  const day = parseInt(timestamp.substring(6, 8));
+  // ignored for our purposes
+  // const hour = parseInt(timestamp.substring(8, 10));
+  // const minute = parseInt(timestamp.substring(10, 12));
+  // const second = parseInt(timestamp.substring(12, 14));
+
+  return {
+    dateString: `${year}-${months[month - 1]}-${day}`,
+    date: new Date(Date.UTC(year, month - 1, day))
+  };
+};
+
 const getPageList = async (forcePull: boolean = false) => {
+  if (fs.existsSync('output/pages')) {
+    fs.readdirSync('output/pages')?.forEach(file => {
+      // console.log(`Found existing page ${file}`);
+      existingPages.push(file);
+    });
+  }
+
   let data: string = '';
   let writeFile: boolean = false;
 
@@ -27,15 +83,33 @@ const getPageList = async (forcePull: boolean = false) => {
 
   lines.forEach(line => {
     const parts = line.split(' ');
-    const id = parts[1];
+    const timestamp = parts[1];
     const url = parts[2];
     const returnType = parts[3];
     const responseCode = parts[4];
+    const { dateString, date } = timestampToDateString(timestamp);
 
     if (returnType !== 'text/html' || responseCode !== '200') return;
 
+    const pageRoute = url.substring(url.lastIndexOf('/') + 1);
+
+    let itemId: string;
+    if (pageRoute.includes('&')) {
+      if (pageRoute.indexOf('&article_id') !== -1 || pageRoute.indexOf('&cat_id') !== -1) {
+        itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
+      } else {
+        itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4, pageRoute.indexOf('&'));
+      }
+    } else {
+      itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
+    }
+
+    if (itemId.startsWith('&')) {
+      itemId = 'NOID';
+    }
+
     pageList.push({
-      id, url
+      timestamp, url, dateString, date, pageRoute, itemId
     });
   });
 
@@ -50,45 +124,10 @@ const getPageList = async (forcePull: boolean = false) => {
     });
   }
 
-  return pageList;
+  return pageList.sort((a, b) => a.date.getTime() - b.date.getTime());
 };
 
-const scrapeAndWriteImage = async (src: string, dateString: string) => {
-  const searchString = '/img/';
-  const imagePath = src.substring(src.indexOf(searchString) + searchString.length);
-  const dir = imagePath.substring(0, imagePath.lastIndexOf('/'));
-  console.log(`Found image ${imagePath} in directory ${dir}`);
-  const outputDir = `output/pages/img/${dateString}/${dir}`;
-  const datedImagePath = `${dateString}/${imagePath}`;
-
-  if (fs.existsSync(`output/pages/img/${datedImagePath}`)) {
-    // @todo multiple versions of images? if they change them and keep the same name...
-    // Store a list of hashed images, hash pulled images, and compare hashes... if they're different, save the new one
-    // but how do we tell a page to use an older version of an image if there isn't one for that date...
-    // maybe just use the closest past one to the current one, or the closest future one to the current one if there is
-    // no older one? But then what if the previous or future pages don't exist yet, so it saves that image even if it's
-    // not the oldest version of the image?
-    // ugh... just save all images per date? screw it...
-    console.log(`Image ${datedImagePath} already exists, skipping.`);
-    return datedImagePath;
-  }
-
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, {recursive: true});
-  }
-
-  const response = await fetch(src);
-
-  if (response?.ok) {
-    const data = await response.arrayBuffer();
-    if (data) {
-      const buffer = Buffer.from(data);
-      fs.writeFileSync(`output/pages/img/${datedImagePath}`, buffer);
-    }
-  }
-
-  return datedImagePath;
-};
+// @todo create image hash db to prevent duplicate images
 
 const scrapeImagesAndStylesheets = async ($: CheerioAPI, dateString: string) => {
   // img tags
@@ -151,12 +190,6 @@ const scrapeImagesAndStylesheets = async ($: CheerioAPI, dateString: string) => 
 
 const scrapePage = async (page: PageEntry, html: string) => {
   const $ = cheerio.load(html);
-  //console.log($.text());
-
-  // displayMonthEl displayDayEl displayYearEl
-  const month = $('#displayMonthEl')?.text();
-  const day = $('#displayDayEl')?.text()?.padStart(2, '0');
-  const year = $('#displayYearEl')?.text();
 
   const pageType = page.url.includes('article_id') ?
     'ART' : page.url.includes('cat_id') ?
@@ -167,58 +200,26 @@ const scrapePage = async (page: PageEntry, html: string) => {
 
   $('#wm-ipp-base')?.remove();
   $('#wm-ipp-print')?.remove();
-  // $('script')?.remove(); removes kbase search scripts :(
 
-  // This is horrendous, I know, but who cares
-  let date = year ? `${year}-${month}-${day}` : 'NODATE';
-  if (date === 'NODATE') {
-    const searchString = 'FILE ARCHIVED ON ';
-    const startIndex = html.indexOf(searchString);
-    const endIndex = html.indexOf(' AND RETRIEVED FROM');
-    if (startIndex !== -1 && endIndex !== -1) {
-      const dateString = html.substring(startIndex + searchString.length, endIndex);
-      if (dateString) {
-        const parts = dateString.split(' ');
-        if (parts.length === 4) {
-          const commentMonth = parts[1];
-          const commentDay = parts[2].substring(0, parts[2].length - 1); // remove trailing comma
-          const commentYear = parts[3];
-          if (commentMonth && commentDay && commentYear) {
-            date = `${commentYear}-${commentMonth.toUpperCase()}-${commentDay}`;
-          }
-        }
-      }
-    }
-  }
+  const date = page.dateString;
 
   if (pageType === 'OTHER') {
     console.log(`Found page /${pageRoute} on date ${date}`);
     fileName = `${date}-${pageRoute}`;
   } else {
-    let itemId: string = '-1';
-    if (pageRoute.includes('&')) {
-      if (pageRoute.indexOf('&article_id') !== -1 || pageRoute.indexOf('&cat_id') !== -1) {
-        itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
-      } else {
-      itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4, pageRoute.indexOf('&'));
-      }
-    } else {
-      itemId = pageRoute.substring(pageRoute.indexOf('_id=') + 4);
-    }
-
-    const cleanTitle = title.replace(/ /g, '_');
-    console.log(`Found ${pageType} ID ${itemId} Title "${title}" on date ${date}`);
-    fileName = `${itemId.startsWith('&') ? 'NOID' : itemId}-${date}-${pageType}-${cleanTitle}`;
+    const cleanTitle = title.replace(SPECIAL_CHAR_REGEX, '_');
+    console.log(`Found ${pageType} ID ${page.itemId} Title "${title}" on date ${date}`);
+    fileName = `${page.itemId}-${date}-${pageType}-${cleanTitle}`;
   }
 
-  fileName = `${fileName}-${page.id}.html`.replace(/\?/g, '');
+  fileName = `${fileName}-${page.timestamp}.html`.replace(/\?/g, '');
 
   console.log(`Writing ${fileName} and associated images and stylesheets...`);
 
   await scrapeImagesAndStylesheets($, date);
 
   // @todo queue and batch writing
-  // @todo pull out CSS and images and write those if they don't already exist
+  // @todo pull out CSS write those if they don't already exist
 
   fs.writeFileSync(`output/pages/${fileName}`, $.html());
 
@@ -226,24 +227,28 @@ const scrapePage = async (page: PageEntry, html: string) => {
 };
 
 const run = async () => {
+  console.log('Running Knowledge Base scraper...');
+
+  readImageDuplicatesFile();
+  readImageHashFile();
+
   const pageList = (await getPageList())
-    .sort((a, b) => a.id.localeCompare(b.id))
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
     .filter(page => page.url.includes('article_id') || page.url.includes('cat_id'));
   console.log(`Found ${pageList.length} usable pages.`);
-  // pageList.forEach(page => {
-  //   console.log(`${page.url} (${page.id})`);
-  // });
 
-  //let stop = false;
-  //let i = 0;
-  //while (!stop) {
-  for (let i = 0; i < 3; i++) {
+  for (let i = PAGE_START; i < PAGE_END; i++) {
     const page = pageList[i];
-    // if (page.id !== '20060707005402') {
-    //   continue;
-    // }
-    const webArchiveUrl = `https://web.archive.org/web/${page.id}/${page.url}`;
-    console.log(`${page.url} (${page.id}), fetching from ${webArchiveUrl}`);
+    const webArchiveUrl = `https://web.archive.org/web/${page.timestamp}/${page.url}`;
+
+    if (existingPages.find(fileName =>
+      fileName.startsWith(page.itemId) && fileName.endsWith(page.timestamp + '.html')
+    )) {
+      // console.log(`Skipping ${page.url} (${page.timestamp}), already scraped.`);
+      continue;
+    }
+
+    console.log(`${page.url} (${page.timestamp}), fetching from ${webArchiveUrl}`);
 
     const response = await fetch(webArchiveUrl);
     if (!response.ok) {
@@ -254,15 +259,14 @@ const run = async () => {
     const html = await response.text();
 
     try {
-      const date = await scrapePage(page, html);
-      // if (date !== 'NODATE') {
-      //   stop = true;
-      // }
+      await scrapePage(page, html);
     } catch (e) {
       console.error(e);
     }
-    //i++;
   }
+
+  writeImageDuplicatesFile();
+  writeImageHashFile();
 };
 
 try {

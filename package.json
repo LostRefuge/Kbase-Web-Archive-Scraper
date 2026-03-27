@@ -4,14 +4,18 @@
   "description": "",
   "main": "run.ts",
   "scripts": {
-    "start": "ts-node-dev run.ts"
+    "start": "ts-node-dev run.ts",
+    "clean:config": "rm output/image-duplicates.json output/image-hash-db.json",
+    "clean:pages": "rm -rf output/pages && mkdir -p output\\pages\\img && mkdir output\\pages\\css",
+    "clean": "npm run clean:pages && npm run clean:config"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@types/node": "^20.11.1",
     "@types/cheerio": "1.0.0",
+    "@types/node": "^20.11.1",
     "cheerio": "^1.2.0",
+    "crypto": "^1.0.1",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"
   }
